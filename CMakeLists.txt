@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(ubiquity_motor)
 
-add_definitions(-std=c++11)
+set(CMAKE_CXX_STANDARD 14) # use C++14
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
@@ -118,10 +118,12 @@ target_link_libraries(probe_robot
 
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
-# install(PROGRAMS
-#   scripts/my_python_script
-#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+install(PROGRAMS
+  scripts/upgrade_firmware.py
+  scripts/test_motor_board.py
+  scripts/test_pi_gpio.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 
 ## Mark executables and/or libraries for installation
 install(TARGETS ubiquity_motor motor_node probe_robot
