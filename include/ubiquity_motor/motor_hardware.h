@@ -41,10 +41,48 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "std_msgs/UInt32.h"
 #include "sensor_msgs/BatteryState.h"
 
+#include <diagnostic_updater/update_functions.h>
+#include <diagnostic_updater/diagnostic_updater.h>
+
 #include <ubiquity_motor/motor_parmeters.h>
 #include <ubiquity_motor/motor_serial.h>
 
 #include <gtest/gtest_prod.h>
+
+struct MotorDiagnostics {
+    MotorDiagnostics()
+        : odom_update_status(
+              diagnostic_updater::FrequencyStatusParam(&odom_min_freq, &odom_max_freq)) {}
+    // Communication Statuses
+    int firmware_version = 0;
+   
+    double odom_max_freq = 1000;
+    double odom_min_freq = 50;
+    diagnostic_updater::FrequencyStatus odom_update_status;
+
+    // Limits
+    bool left_pwm_limit = false;
+    bool right_pwm_limit = false;
+    bool left_integral_limit = false;
+    bool right_integral_limit = false;
+
+    // Power supply statuses
+    float battery_voltage = 0.0;
+    /* For later implementation (firmware support)
+    bool  main_5V_error = false;
+    bool  main_5V_ol = false;
+    bool  main_12V_error = false;
+    bool  main_12V_ol = false;
+    bool  aux_5V_error = false;
+    bool  aux_5V_ol = false;
+    bool  aux_12V_error = false;
+    bool  aux_12V_ol = false;
+    */
+
+    void firmware_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void limit_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void battery_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+};
 
 class MotorHardware : public hardware_interface::RobotHW {
 public:
@@ -59,9 +97,20 @@ public:
     void sendParams();
     void setDeadmanTimer(int32_t deadman);
     void setDebugLeds(bool led1, bool led2);
-
+    void setHardwareVersion(int32_t hardware_version);
+    void setEstopPidThreshold(int32_t estop_pid_threshold);
+    void setEstopDetection(int32_t estop_detection);
+    void setMaxFwdSpeed(int32_t max_speed_fwd);
+    void setMaxRevSpeed(int32_t max_speed_rev);
+    void setMaxPwm(int32_t max_pwm);
     int firmware_version;
+    int hardware_version;
+    int estop_pid_threshold;
+    int max_speed_fwd;
+    int max_speed_rev;
+    int max_pwm;
 
+    diagnostic_updater::Updater diag_updater;
 private:
     void _addOdometryRequest(std::vector<MotorMessage>& commands) const;
     void _addVelocityRequest(std::vector<MotorMessage>& commands) const;
@@ -72,8 +121,8 @@ private:
     hardware_interface::JointStateInterface joint_state_interface_;
     hardware_interface::VelocityJointInterface velocity_joint_interface_;
 
-    FirmwareParams pid_params;
-    FirmwareParams prev_pid_params;
+    FirmwareParams fw_params;
+    FirmwareParams prev_fw_params;
 
     int32_t deadman_timer;
 
@@ -94,6 +143,8 @@ private:
     ros::Publisher battery_state;
 
     MotorSerial* motor_serial_;
+
+    MotorDiagnostics motor_diag_;
 
     FRIEND_TEST(MotorHardwareTests, nonZeroWriteSpeedsOutputs);
     FRIEND_TEST(MotorHardwareTests, odomUpdatesPosition);
