@@ -72,16 +72,31 @@ MotorHardware::MotorHardware(ros::NodeHandle nh, CommsParams serial_params,
 
     sendPid_count = 0;
 
-    pid_params = firmware_params;
+    fw_params = firmware_params;
 
-    prev_pid_params.pid_proportional = -1;
-    prev_pid_params.pid_integral = -1;
-    prev_pid_params.pid_derivative = -1;
-    prev_pid_params.pid_denominator = -1;
-    prev_pid_params.pid_moving_buffer_size = -1;
-    prev_pid_params.deadman_timer = -1;
+    prev_fw_params.pid_proportional = -1;
+    prev_fw_params.pid_integral = -1;
+    prev_fw_params.pid_derivative = -1;
+    prev_fw_params.pid_denominator = -1;
+    prev_fw_params.pid_moving_buffer_size = -1;
+    prev_fw_params.max_speed_fwd = -1;
+    prev_fw_params.max_speed_rev = -1;
+    prev_fw_params.max_pwm = -1;
+    prev_fw_params.deadman_timer = -1;
+    prev_fw_params.controller_board_version = -1;
+    prev_fw_params.estop_detection = -1;
+    prev_fw_params.estop_pid_threshold = -1;
+    prev_fw_params.max_speed_fwd = -1;
+    prev_fw_params.max_speed_rev = -1;
+    prev_fw_params.max_pwm = -1;
 
+    hardware_version = 0;
     firmware_version = 0;
+
+    diag_updater.setHardwareID("Motor Controller");
+    diag_updater.add("Firmware", &motor_diag_, &MotorDiagnostics::firmware_status);
+    diag_updater.add("Limits", &motor_diag_, &MotorDiagnostics::limit_status);
+    diag_updater.add("Battery", &motor_diag_, &MotorDiagnostics::battery_status);
 }
 
 MotorHardware::~MotorHardware() { delete motor_serial_; }
@@ -106,6 +121,7 @@ void MotorHardware::readInputs() {
                     } else {
                         ROS_INFO("Firmware version %d", mm.getData());
                         firmware_version = mm.getData();
+			motor_diag_.firmware_version = firmware_version;
                     }
                     break;
 
@@ -118,6 +134,8 @@ void MotorHardware::readInputs() {
 
                     joints_[0].position += (odomLeft / TICS_PER_RADIAN);
                     joints_[1].position += (odomRight / TICS_PER_RADIAN);
+
+		    motor_diag_.odom_update_status.tick(); // Let diag know we got odom
                     break;
                 }
                 case MotorMessage::REG_BOTH_ERROR: {
@@ -138,23 +156,27 @@ void MotorHardware::readInputs() {
 
                     if (data & MotorMessage::LIM_M1_PWM) {
                         ROS_WARN("left PWM limit reached");
+		    	motor_diag_.left_pwm_limit = true; 
                     }
                     if (data & MotorMessage::LIM_M2_PWM) {
                         ROS_WARN("right PWM limit reached");
+		    	motor_diag_.right_pwm_limit = true; 
                     }
                     if (data & MotorMessage::LIM_M1_INTEGRAL) {
                         ROS_DEBUG("left Integral limit reached");
+		    	motor_diag_.left_integral_limit = true; 
                     }
                     if (data & MotorMessage::LIM_M2_INTEGRAL) {
                         ROS_DEBUG("right Integral limit reached");
+		    	motor_diag_.right_integral_limit = true; 
                     }
                     break;
                 }
                 case MotorMessage::REG_BATTERY_VOLTAGE: {
                     int32_t data = mm.getData();
                     sensor_msgs::BatteryState bstate;
-                    bstate.voltage = (float)data * pid_params.battery_voltage_multiplier +
-                                   pid_params.battery_voltage_offset;
+                    bstate.voltage = (float)data * fw_params.battery_voltage_multiplier +
+                                   fw_params.battery_voltage_offset;
                     bstate.current = std::numeric_limits<float>::quiet_NaN();
                     bstate.charge = std::numeric_limits<float>::quiet_NaN();
                     bstate.capacity = std::numeric_limits<float>::quiet_NaN();
@@ -164,6 +186,8 @@ void MotorHardware::readInputs() {
                     bstate.power_supply_health = sensor_msgs::BatteryState::POWER_SUPPLY_HEALTH_UNKNOWN;
                     bstate.power_supply_technology = sensor_msgs::BatteryState::POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
                     battery_state.publish(bstate);
+
+		    motor_diag_.battery_voltage = bstate.voltage; 
                     break;
                 }
                 default:
@@ -202,6 +226,69 @@ void MotorHardware::requestVersion() {
     motor_serial_->transmitCommand(version);
 }
 
+
+// Due to greatly limited pins on the firmware processor the host figures out the hardware rev and sends it to fw
+// The hardware version is 0x0000MMmm  where MM is major rev like 4 and mm is minor rev like 9 for first units.
+// The 1st firmware version this is set for is 32, before it was always 1
+void MotorHardware::setHardwareVersion(int32_t hardware_version) {
+    ROS_INFO("setting hardware_version to %x", (int)hardware_version);
+    MotorMessage mm;
+    mm.setRegister(MotorMessage::REG_HARDWARE_VERSION);
+    mm.setType(MotorMessage::TYPE_WRITE);
+    mm.setData(hardware_version);
+    motor_serial_->transmitCommand(mm);
+}
+
+// Setup the controller board threshold to put into force estop protection on boards prior to rev 5.0 with hardware support
+void MotorHardware::setEstopPidThreshold(int32_t estop_pid_threshold) {
+    ROS_INFO("setting Estop PID threshold to %d", (int)estop_pid_threshold);
+    MotorMessage mm;
+    mm.setRegister(MotorMessage::REG_PID_MAX_ERROR);
+    mm.setType(MotorMessage::TYPE_WRITE);
+    mm.setData(estop_pid_threshold);
+    motor_serial_->transmitCommand(mm);
+}
+
+// Setup the controller board to have estop button state detection feature enabled or not
+void MotorHardware::setEstopDetection(int32_t estop_detection) {
+    ROS_INFO("setting estop button detection to %x", (int)estop_detection);
+    MotorMessage mm;
+    mm.setRegister(MotorMessage::REG_ESTOP_ENABLE);
+    mm.setType(MotorMessage::TYPE_WRITE);
+    mm.setData(estop_detection);
+    motor_serial_->transmitCommand(mm);
+}
+
+// Setup the controller board maximum settable motor forward speed 
+void MotorHardware::setMaxFwdSpeed(int32_t max_speed_fwd) {
+    ROS_INFO("setting max motor forward speed to %d", (int)max_speed_fwd);
+    MotorMessage mm;
+    mm.setRegister(MotorMessage::REG_MAX_SPEED_FWD);
+    mm.setType(MotorMessage::TYPE_WRITE);
+    mm.setData(max_speed_fwd);
+    motor_serial_->transmitCommand(mm);
+}
+
+// Setup the controller board maximum settable motor reverse speed
+void MotorHardware::setMaxRevSpeed(int32_t max_speed_rev) {
+    ROS_INFO("setting max motor reverse speed to %d", (int)max_speed_rev);
+    MotorMessage mm;
+    mm.setRegister(MotorMessage::REG_MAX_SPEED_REV);
+    mm.setType(MotorMessage::TYPE_WRITE);
+    mm.setData(max_speed_rev);
+    motor_serial_->transmitCommand(mm);
+}
+
+// Setup the controller board maximum PWM level allowed for a motor
+void MotorHardware::setMaxPwm(int32_t max_pwm) {
+    ROS_INFO("setting max motor PWM to %x", (int)max_pwm);
+    MotorMessage mm;
+    mm.setRegister(MotorMessage::REG_MAX_PWM);
+    mm.setType(MotorMessage::TYPE_WRITE);
+    mm.setData(max_pwm);
+    motor_serial_->transmitCommand(mm);
+}
+
 void MotorHardware::setDeadmanTimer(int32_t deadman_timer) {
     ROS_ERROR("setting deadman to %d", (int)deadman_timer);
     MotorMessage mm;
@@ -212,11 +299,13 @@ void MotorHardware::setDeadmanTimer(int32_t deadman_timer) {
 }
 
 void MotorHardware::setParams(FirmwareParams fp) {
-    pid_params.pid_proportional = fp.pid_proportional;
-    pid_params.pid_integral = fp.pid_integral;
-    pid_params.pid_derivative = fp.pid_derivative;
-    pid_params.pid_denominator = fp.pid_denominator;
-    pid_params.pid_moving_buffer_size = fp.pid_moving_buffer_size;
+    fw_params.pid_proportional = fp.pid_proportional;
+    fw_params.pid_integral = fp.pid_integral;
+    fw_params.pid_derivative = fp.pid_derivative;
+    fw_params.pid_denominator = fp.pid_denominator;
+    fw_params.pid_moving_buffer_size = fp.pid_moving_buffer_size;
+    fw_params.pid_denominator = fp.pid_denominator;
+    fw_params.estop_pid_threshold = fp.estop_pid_threshold;
 }
 
 void MotorHardware::sendParams() {
@@ -226,63 +315,66 @@ void MotorHardware::sendParams() {
     //(int)p_value, (int)i_value, (int)d_value, (int)denominator_value);
 
     // Only send one register at a time to avoid overwhelming serial comms
+    // SUPPORT NOTE!  Adjust modulo for cycle and be sure no duplicate modulos are used!
     int cycle = (sendPid_count++) % 5;
 
     if (cycle == 0 &&
-        pid_params.pid_proportional != prev_pid_params.pid_proportional) {
-        ROS_WARN("Setting P to %d", pid_params.pid_proportional);
-        prev_pid_params.pid_proportional = pid_params.pid_proportional;
+        fw_params.pid_proportional != prev_fw_params.pid_proportional) {
+        ROS_WARN("Setting P to %d", fw_params.pid_proportional);
+        prev_fw_params.pid_proportional = fw_params.pid_proportional;
         MotorMessage p;
         p.setRegister(MotorMessage::REG_PARAM_P);
         p.setType(MotorMessage::TYPE_WRITE);
-        p.setData(pid_params.pid_proportional);
+        p.setData(fw_params.pid_proportional);
         commands.push_back(p);
     }
 
-    if (cycle == 1 && pid_params.pid_integral != prev_pid_params.pid_integral) {
-        ROS_WARN("Setting I to %d", pid_params.pid_integral);
-        prev_pid_params.pid_integral = pid_params.pid_integral;
+    if (cycle == 1 && fw_params.pid_integral != prev_fw_params.pid_integral) {
+        ROS_WARN("Setting I to %d", fw_params.pid_integral);
+        prev_fw_params.pid_integral = fw_params.pid_integral;
         MotorMessage i;
         i.setRegister(MotorMessage::REG_PARAM_I);
         i.setType(MotorMessage::TYPE_WRITE);
-        i.setData(pid_params.pid_integral);
+        i.setData(fw_params.pid_integral);
         commands.push_back(i);
     }
 
     if (cycle == 2 &&
-        pid_params.pid_derivative != prev_pid_params.pid_derivative) {
-        ROS_WARN("Setting D to %d", pid_params.pid_derivative);
-        prev_pid_params.pid_derivative = pid_params.pid_derivative;
+        fw_params.pid_derivative != prev_fw_params.pid_derivative) {
+        ROS_WARN("Setting D to %d", fw_params.pid_derivative);
+        prev_fw_params.pid_derivative = fw_params.pid_derivative;
         MotorMessage d;
         d.setRegister(MotorMessage::REG_PARAM_D);
         d.setType(MotorMessage::TYPE_WRITE);
-        d.setData(pid_params.pid_derivative);
+        d.setData(fw_params.pid_derivative);
         commands.push_back(d);
     }
 
     if (cycle == 3 &&
-        pid_params.pid_denominator != prev_pid_params.pid_denominator) {
-        ROS_WARN("Setting Denominator to %d", pid_params.pid_denominator);
-        prev_pid_params.pid_denominator = pid_params.pid_denominator;
+        fw_params.pid_denominator != prev_fw_params.pid_denominator) {
+        ROS_WARN("Setting Denominator to %d", fw_params.pid_denominator);
+        prev_fw_params.pid_denominator = fw_params.pid_denominator;
         MotorMessage denominator;
         denominator.setRegister(MotorMessage::REG_PARAM_C);
         denominator.setType(MotorMessage::TYPE_WRITE);
-        denominator.setData(pid_params.pid_denominator);
+        denominator.setData(fw_params.pid_denominator);
         commands.push_back(denominator);
     }
 
     if (cycle == 4 &&
-        pid_params.pid_moving_buffer_size !=
-            prev_pid_params.pid_moving_buffer_size) {
-        ROS_WARN("Setting D window to %d", pid_params.pid_moving_buffer_size);
-        prev_pid_params.pid_moving_buffer_size =
-            pid_params.pid_moving_buffer_size;
+        fw_params.pid_moving_buffer_size !=
+            prev_fw_params.pid_moving_buffer_size) {
+        ROS_WARN("Setting D window to %d", fw_params.pid_moving_buffer_size);
+        prev_fw_params.pid_moving_buffer_size =
+            fw_params.pid_moving_buffer_size;
         MotorMessage winsize;
         winsize.setRegister(MotorMessage::REG_MOVING_BUF_SIZE);
         winsize.setType(MotorMessage::TYPE_WRITE);
-        winsize.setData(pid_params.pid_moving_buffer_size);
+        winsize.setData(fw_params.pid_moving_buffer_size);
         commands.push_back(winsize);
     }
+
+    // SUPPORT NOTE!  Adjust modulo for cycle and be sure no duplicate modulos are used!
 
     if (commands.size() != 0) {
         motor_serial_->transmitCommands(commands);
@@ -323,3 +415,54 @@ int16_t MotorHardware::calculateTicsFromRadians(double radians) const {
 double MotorHardware::calculateRadiansFromTics(int16_t tics) const {
     return (tics * VELOCITY_READ_PER_SECOND / QTICS_PER_RADIAN);
 }
+
+// Diagnostics Status Updater Functions
+using diagnostic_updater::DiagnosticStatusWrapper;
+using diagnostic_msgs::DiagnosticStatus;
+
+void MotorDiagnostics::firmware_status(DiagnosticStatusWrapper &stat) {
+    stat.add("Firmware Version", firmware_version);
+    if (firmware_version == 0) {
+        stat.summary(DiagnosticStatus::ERROR, "No firmware version reported");
+    }
+    else if (firmware_version < 30) {
+        stat.summary(DiagnosticStatus::WARN, "Firmware is older than reccomended");
+    }
+    else {
+        stat.summary(DiagnosticStatus::OK, "Firmware version is OK");
+    }
+}
+
+void MotorDiagnostics::limit_status(DiagnosticStatusWrapper &stat) {
+    stat.summary(DiagnosticStatus::OK, "Limits reached:");
+    if (left_pwm_limit) {
+        stat.mergeSummary(DiagnosticStatusWrapper::ERROR, " left pwm,");
+	left_pwm_limit = false;
+    }
+    if (right_pwm_limit) {
+        stat.mergeSummary(DiagnosticStatusWrapper::ERROR, " right pwm,");
+	right_pwm_limit = false;
+    }
+    if (left_integral_limit) {
+        stat.mergeSummary(DiagnosticStatusWrapper::WARN, " left integral,");
+	left_integral_limit = false;
+    }
+    if (right_integral_limit) {
+        stat.mergeSummary(DiagnosticStatusWrapper::WARN, " right integral,");
+	right_integral_limit = false;
+    }
+}
+
+void MotorDiagnostics::battery_status(DiagnosticStatusWrapper &stat) {
+    stat.add("Battery Voltage", battery_voltage);
+    if (battery_voltage < 22.5) {
+        stat.summary(DiagnosticStatusWrapper::WARN, "Battery low");
+    } 
+    else if (battery_voltage < 21.0) {
+        stat.summary(DiagnosticStatusWrapper::ERROR, "Battery critical");
+    }
+    else {
+        stat.summary(DiagnosticStatusWrapper::OK, "Battery OK");
+    }
+}
+
