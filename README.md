@@ -1,3 +1,26 @@
+## ubiquity_motor (kinetic) - 0.9.0-0
+
+The packages in the `ubiquity_motor` repository were released into the `kinetic` distro by running `/usr/bin/bloom-release ubiquity_motor --track kinetic --rosdistro kinetic` on `Thu, 04 Apr 2019 04:59:09 -0000`
+
+The `ubiquity_motor` package was released.
+
+Version of package(s) in repository `ubiquity_motor`:
+
+- upstream repository: https://github.com/UbiquityRobotics/ubiquity_motor.git
+- release repository: https://github.com/UbiquityRobotics-release/ubiquity_motor-release.git
+- rosdistro version: `0.8.0-0`
+- old version: `0.8.0-0`
+- new version: `0.9.0-0`
+
+Versions of tools used:
+
+- bloom version: `0.7.2`
+- catkin_pkg version: `0.4.11`
+- rosdep version: `0.15.1`
+- rosdistro version: `0.7.3`
+- vcstools version: `0.1.40`
+
+
 ## ubiquity_motor (kinetic) - 0.8.0-0
 
 The packages in the `ubiquity_motor` repository were released into the `kinetic` distro by running `/usr/bin/bloom-release ubiquity_motor -t kinetic -r kinetic` on `Wed, 02 Jan 2019 03:01:04 -0000`
