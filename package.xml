@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>ubiquity_motor</name>
-  <version>0.9.0</version>
+  <version>0.10.0</version>
   <description>Provides a ROS interface to Ubiquity Robotics Magni motor controllers</description>
 
   <maintainer email="rohan@aleopile.com">Rohan Agrawal</maintainer>
@@ -12,6 +12,7 @@
   <build_depend>roscpp</build_depend>
   <test_depend>rostest</test_depend>
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>tf</depend>
   <depend>nav_msgs</depend>
   <depend>serial</depend>
