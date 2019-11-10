@@ -1,0 +1,12 @@
+Source: ros-melodic-ubiquity-motor
+Section: misc
+Priority: optional
+Maintainer: Rohan Agrawal <rohan@aleopile.com>
+Build-Depends: debhelper (>= 9.0.0), ros-melodic-catkin, ros-melodic-controller-manager, ros-melodic-diagnostic-updater, ros-melodic-dynamic-reconfigure, ros-melodic-geometry-msgs, ros-melodic-hardware-interface, ros-melodic-nav-msgs, ros-melodic-roscpp, ros-melodic-rostest, ros-melodic-serial, ros-melodic-std-msgs, ros-melodic-tf
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-melodic-ubiquity-motor
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, python-requests, ros-melodic-controller-manager, ros-melodic-diagnostic-updater, ros-melodic-diff-drive-controller, ros-melodic-dynamic-reconfigure, ros-melodic-geometry-msgs, ros-melodic-hardware-interface, ros-melodic-joint-state-controller, ros-melodic-nav-msgs, ros-melodic-serial, ros-melodic-std-msgs, ros-melodic-tf
+Description: Provides a ROS interface to Ubiquity Robotics Magni motor controllers
