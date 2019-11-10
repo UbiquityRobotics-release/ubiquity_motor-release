@@ -37,6 +37,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 typedef boost::array<uint8_t, 8> RawMotorMessage;
 
+// To support enhanced firmware we identify the fw version for new registers 
+// The idea is we do not want to make firmware message requests till a feature is supported
+#define MIN_FW_RECOMMENDED        32
+#define MIN_FW_MOT_POW_ACTIVE     32  
+#define MIN_FW_ESTOP_SUPPORT      32  
+#define MIN_FW_HW_VERSION_SET     32  
+#define MIN_FW_MAX_SPEED_AND_PWM  34  
+#define MIN_FW_ENC_6_STATE        35
+#define MIN_FW_FIRMWARE_DATE      35
+#define MIN_FW_DEADZONE           35
+#define MIN_FW_PID_V_TERM         35
 
 // It is CRITICAL that the values in the Registers enum remain in sync with Firmware register numbers.
 // In fact once a register is defined and released, it should NOT be re-used at a later time for another purpose
@@ -89,9 +100,9 @@ public:
         REG_5V_AUX_OL = 0x16,
         REG_12V_MAIN_OL = 0x17,
         REG_12V_AUX_OL = 0x18,
-        REG_LEFT_MOTOR_ERROR = 0x19,
-        REG_RIGHT_MOTOR_ERROR = 0x1A,
+        REG_UNUSED_19 = 0x19,
 
+        REG_PARAM_V = 0x1A,            // New in final v35 firmware and was an obsolite value before then
         REG_PARAM_P = 0x1B,
         REG_PARAM_I = 0x1C,
         REG_PARAM_D = 0x1D,
@@ -128,6 +139,10 @@ public:
         REG_MAX_SPEED_REV  = 0x36,  // Max reverse speed cap in a speed message  (This is negative)
         REG_MAX_PWM        = 0x37,  // The maximum wheel driver PWM value that will be used on the motor driver
 
+        REG_HW_OPTIONS     = 0x38,  // Bitfield with options the firmware has been setup to use
+        REG_DEADZONE       = 0x39,  // Set to non zero to enable deadzone when stopped and speeds are zero
+        REG_FIRMWARE_DATE  = 0x3a,  // Read only firmware date as of version 35 firmware. 0x20190705 is July 5 2019
+
         DEBUG_50 = 0x50,
         DEBUG_51 = 0x51,
         DEBUG_52 = 0x52,
@@ -139,13 +154,24 @@ public:
         DEBUG_58 = 0x58
     };
 
+    // Bitfield values for hardware options enabled in the firmware
+    enum HwOptions {
+        OPT_ENC_6_STATE = 0x01,
+    };
+
     // Bitfield indicating which limits have been reached
     enum Limits {
         LIM_M1_PWM = 0x10,
         LIM_M2_PWM = 0x01,
         LIM_M1_INTEGRAL = 0x20,
-        LIM_M2_INTEGRAL = 0x02
+        LIM_M2_INTEGRAL = 0x02,
+        LIM_M1_MAX_SPD  = 0x40,
+        LIM_M2_MAX_SPD  = 0x4,
+        LIM_PARAM_LIMIT = 0x80
     };
+
+    // State bits for motor power
+    const static int32_t MOT_POW_ACTIVE = 0x0001;
 
     void setType(MotorMessage::MessageTypes type);
     MotorMessage::MessageTypes getType() const;
@@ -158,9 +184,20 @@ public:
 
     RawMotorMessage serialize() const;
 
-    int deserialize(const RawMotorMessage &serialized);
 
-    const static uint8_t delimeter = 0x7E;  // TODO: parameterize
+    // Error Codes that can be returned by deserializaion
+    enum ErrorCodes {
+        ERR_NONE             = 0, // Success code 
+        ERR_DELIMITER        = 1, 
+        ERR_WRONG_PROTOCOL   = 2, 
+        ERR_BAD_CHECKSUM     = 3, 
+        ERR_BAD_TYPE         = 4, 
+        ERR_UNKNOWN_REGISTER = 5 
+    };
+
+    MotorMessage::ErrorCodes deserialize(const RawMotorMessage &serialized);
+
+    const static uint8_t delimeter = 0x7E;
 
 private:
     // Type of message should be in MotorMessage::MessageTypes
