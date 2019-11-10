@@ -39,6 +39,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "std_msgs/Int32.h"
 #include "std_msgs/UInt32.h"
+#include "std_msgs/Bool.h"
 #include "sensor_msgs/BatteryState.h"
 
 #include <diagnostic_updater/update_functions.h>
@@ -55,6 +56,8 @@ struct MotorDiagnostics {
               diagnostic_updater::FrequencyStatusParam(&odom_min_freq, &odom_max_freq)) {}
     // Communication Statuses
     int firmware_version = 0;
+    int firmware_date    = 0;
+    int firmware_options = 0;
    
     double odom_max_freq = 1000;
     double odom_min_freq = 50;
@@ -65,6 +68,9 @@ struct MotorDiagnostics {
     bool right_pwm_limit = false;
     bool left_integral_limit = false;
     bool right_integral_limit = false;
+    bool left_max_speed_limit = false;
+    bool right_max_speed_limit = false;
+    bool param_limit_in_firmware = false;
 
     // Power supply statuses
     float battery_voltage = 0.0;
@@ -79,9 +85,14 @@ struct MotorDiagnostics {
     bool  aux_12V_ol = false;
     */
 
+    bool  estop_motor_power_off = false;  // for Diagnostic reporting of ESTOP switch
+
     void firmware_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
     void limit_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
     void battery_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void motor_power_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void firmware_options_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void firmware_date_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
 };
 
 class MotorHardware : public hardware_interface::RobotHW {
@@ -92,31 +103,38 @@ public:
     void clearCommands();
     void readInputs();
     void writeSpeeds();
-    void requestVersion();
+    void writeSpeedsInRadians(double  left_radians, double  right_radians);
+    void requestFirmwareVersion();
+    void requestFirmwareDate();
     void setParams(FirmwareParams firmware_params);
     void sendParams();
     void setDeadmanTimer(int32_t deadman);
+    void setDeadzoneEnable(int32_t deadzone_enable);
     void setDebugLeds(bool led1, bool led2);
     void setHardwareVersion(int32_t hardware_version);
     void setEstopPidThreshold(int32_t estop_pid_threshold);
     void setEstopDetection(int32_t estop_detection);
+    bool getEstopState(void);
     void setMaxFwdSpeed(int32_t max_speed_fwd);
     void setMaxRevSpeed(int32_t max_speed_rev);
     void setMaxPwm(int32_t max_pwm);
     int firmware_version;
+    int firmware_date;
+    int firmware_options;
     int hardware_version;
     int estop_pid_threshold;
     int max_speed_fwd;
     int max_speed_rev;
     int max_pwm;
+    int deadman_enable;
 
     diagnostic_updater::Updater diag_updater;
 private:
     void _addOdometryRequest(std::vector<MotorMessage>& commands) const;
     void _addVelocityRequest(std::vector<MotorMessage>& commands) const;
 
-    int16_t calculateTicsFromRadians(double radians) const;
-    double calculateRadiansFromTics(int16_t tics) const;
+    int16_t calculateSpeedFromRadians(double radians) const;
+    double calculateRadiansFromTicks(int16_t ticks) const;
 
     hardware_interface::JointStateInterface joint_state_interface_;
     hardware_interface::VelocityJointInterface velocity_joint_interface_;
@@ -126,7 +144,11 @@ private:
 
     int32_t deadman_timer;
 
+    double  ticks_per_radian;       // Odom ticks per radian for wheel encoders in use
+
     int32_t sendPid_count;
+
+    bool estop_motor_power_off;    // Motor power inactive, most likely from ESTOP switch
 
     struct Joint {
         double position;
@@ -141,6 +163,7 @@ private:
     ros::Publisher rightError;
 
     ros::Publisher battery_state;
+    ros::Publisher motor_power_active;
 
     MotorSerial* motor_serial_;
 
