@@ -121,7 +121,7 @@ public:
     void setMaxFwdSpeed(int32_t max_speed_fwd);
     void setMaxRevSpeed(int32_t max_speed_rev);
     void setMaxPwm(int32_t max_pwm);
-    void setHardwareOptions(int32_t hardware_options);
+    void setWheelType(int32_t wheel_type);
     int  getOptionSwitch(void);
     void setOptionSwitchReg(int32_t option_switch);
     void requestSystemEvents();
@@ -129,6 +129,7 @@ public:
     int firmware_version;
     int firmware_date;
     int firmware_options;
+    int num_fw_params;  // This is used for sendParams as modulo count
     int hardware_version;
     int estop_pid_threshold;
     int max_speed_fwd;
@@ -136,6 +137,7 @@ public:
     int max_pwm;
     int deadman_enable;
     int system_events;
+
 
     diagnostic_updater::Updater diag_updater;
 private:
