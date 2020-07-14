@@ -81,7 +81,6 @@ int main(int argc, char* argv[]) {
 
     ros::Rate ctrlLoopDelay(node_params.controller_loop_rate);
 
-
     std::unique_ptr<MotorHardware> robot = nullptr;
     // Keep trying to open serial
     {
@@ -142,26 +141,28 @@ int main(int argc, char* argv[]) {
     }
 
     // Determine hardware options that can be set by the host to override firmware defaults
-    int32_t host_setable_hw_options = 0;
-    if (node_params.wheel_type == "standard") {
-        host_setable_hw_options |= MotorMessage::OPT_WHEEL_TYPE_STANDARD;
-        ROS_INFO("Host is specifying hardware wheel_type of '%s'", "standard");
-    } else if (node_params.wheel_type == "thin"){
-        host_setable_hw_options |= MotorMessage::OPT_WHEEL_TYPE_THIN;
-        ROS_INFO("Host is specifying hardware wheel_type of '%s'", "thin");
-    } else if (node_params.wheel_type == "firmware_default") {
+    int32_t wheel_type = 0;
+    if (node_params.wheel_type == "firmware_default") {
         // Here there is no specification so the firmware default will be used
         ROS_INFO("Firmware default wheel_type will be used.");
     } else {
-        ROS_WARN("Invalid wheel_type of '%s' specified! Using wheel type of standard", 
-            node_params.wheel_type.c_str());
-        node_params.wheel_type = "standard";
-        host_setable_hw_options |= MotorMessage::OPT_WHEEL_TYPE_STANDARD;
+        // Any other setting leads to host setting the wheel type
+        if (node_params.wheel_type == "standard") {
+            wheel_type = MotorMessage::OPT_WHEEL_TYPE_STANDARD;
+            ROS_INFO("Host is specifying wheel_type of '%s'", "standard");
+        } else if (node_params.wheel_type == "thin"){
+            wheel_type = MotorMessage::OPT_WHEEL_TYPE_THIN;
+            ROS_INFO("Host is specifying wheel_type of '%s'", "thin");
+        } else {
+            ROS_WARN("Invalid wheel_type of '%s' specified! Using wheel type of standard", 
+                node_params.wheel_type.c_str());
+            node_params.wheel_type = "standard";
+            wheel_type = MotorMessage::OPT_WHEEL_TYPE_STANDARD;
+        }
+        // Write out the wheel type setting
+        robot->setWheelType(wheel_type);
+        ctrlLoopDelay.sleep();    // Allow controller to process command
     }
-
-    // Write out any host side setable option bits to the firmware
-    robot->setHardwareOptions(host_setable_hw_options);
-    ctrlLoopDelay.sleep();    // Allow controller to process command
 
     // Tell the controller board firmware what version the hardware is at this time.
     // TODO: Read from I2C.   At this time we only allow setting the version from ros parameters
@@ -198,22 +199,20 @@ int main(int argc, char* argv[]) {
         ctrlLoopDelay.sleep();        // Allow controller to process command
     }
 
-    if (robot->firmware_version >= MIN_FW_DEADZONE) {
-        robot->setDeadzoneEnable(firmware_params.deadzone_enable);
-        ctrlLoopDelay.sleep();        // Allow controller to process command
-    }
-
     ros::Time last_time;
     ros::Time current_time;
     ros::Time last_sys_event_query_time;
     ros::Duration elapsed;
     ros::Duration elapsed_since_sys_event_query;
-    ros::Duration sysEventQueryPeriod(5.0);
+    ros::Duration sysEventQueryPeriod(15.0);     // A periodic query of MCB
 
-    for (int i = 0; i < 5; i++) {
+    // Send out the refreshable firmware parameters, most are the PID terms
+    // We must be sure num_fw_params is set to the modulo used in sendParams()
+    for (int i = 0; i < robot->num_fw_params; i++) {
         ctrlLoopDelay.sleep();        // Allow controller to process command
         robot->sendParams();
     }
+
     float expectedCycleTime = ctrlLoopDelay.expectedCycleTime().toSec();
     float minCycleTime = 0.75 * expectedCycleTime;
     float maxCycleTime = 1.25 * expectedCycleTime;
@@ -245,16 +244,17 @@ int main(int argc, char* argv[]) {
             robot->clearCommands();
         }
         robot->setParams(firmware_params);
-        robot->sendParams();
+        robot->sendParams(); 
 
         // Periodically watch for MCB board having been reset which is an MCB system event
+        // This is also a good place to refresh or show status that may have changed
         elapsed_since_sys_event_query = current_time - last_sys_event_query_time;
         if ((robot->firmware_version >= MIN_FW_SYSTEM_EVENTS) &&
            (elapsed_since_sys_event_query > sysEventQueryPeriod)) {
             robot->requestSystemEvents();
             last_sys_event_query_time = ros::Time::now();
             ctrlLoopDelay.sleep();        // Allow controller to process command
-            ROS_DEBUG("Motor controller system events now are 0x%x", robot->system_events);
+            ROS_INFO("Motor controller RUNNING. MCB System events are 0x%x", robot->system_events);
 
             // If we detect a power-on of MCB we should re-initialize MCB
             if ((robot->system_events & MotorMessage::SYS_EVENT_POWERON) != 0) {
@@ -263,6 +263,10 @@ int main(int argc, char* argv[]) {
                 robot->system_events = 0;
                 ctrlLoopDelay.sleep();        // Allow controller to process command
             }
+
+            // Refresh the wheel type setting
+            robot->setWheelType(wheel_type);
+            ctrlLoopDelay.sleep();    // Allow controller to process command
         }
 
         // Update motor controller speeds.
