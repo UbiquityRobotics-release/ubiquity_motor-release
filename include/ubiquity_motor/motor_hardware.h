@@ -58,6 +58,15 @@ struct MotorDiagnostics {
     int firmware_version = 0;
     int firmware_date    = 0;
     int firmware_options = 0;
+
+    // These are for diagnostic topic output 
+    int fw_pid_proportional = 0;
+    int fw_pid_integral = 0;
+    int fw_pid_derivative = 0;
+    int fw_pid_velocity = 0;
+    int fw_pid_denominator = 0;
+    int fw_pid_moving_buffer_size = 0;
+    int fw_max_pwm = 0;
    
     double odom_max_freq = 1000;
     double odom_min_freq = 50;
@@ -94,6 +103,11 @@ struct MotorDiagnostics {
     void limit_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
     void battery_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
     void motor_power_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void motor_pid_p_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void motor_pid_i_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void motor_pid_d_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void motor_pid_v_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
+    void motor_max_pwm_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
     void firmware_options_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
     void firmware_date_status(diagnostic_updater::DiagnosticStatusWrapper &stat);
 };
@@ -103,6 +117,8 @@ public:
     MotorHardware(ros::NodeHandle nh, CommsParams serial_params,
                   FirmwareParams firmware_params);
     virtual ~MotorHardware();
+    void closePort();
+    bool openPort();
     void clearCommands();
     void readInputs();
     void writeSpeeds();
@@ -111,6 +127,8 @@ public:
     void requestFirmwareDate();
     void setParams(FirmwareParams firmware_params);
     void sendParams();
+    void forcePidParamUpdates();
+    float getBatteryVoltage(void); 
     void setDeadmanTimer(int32_t deadman);
     void setDeadzoneEnable(int32_t deadzone_enable);
     void setDebugLeds(bool led1, bool led2);
@@ -122,10 +140,13 @@ public:
     void setMaxRevSpeed(int32_t max_speed_rev);
     void setMaxPwm(int32_t max_pwm);
     void setWheelType(int32_t wheel_type);
+    void setWheelDirection(int32_t wheel_direction);
     int  getOptionSwitch(void);
     void setOptionSwitchReg(int32_t option_switch);
     void requestSystemEvents();
     void setSystemEvents(int32_t system_events);
+    void getWheelJointPositions(double &leftWheelPosition, double &rightWheelPosition);
+    void setWheelJointVelocities(double leftWheelVelocity, double rightWheelVelocity);
     int firmware_version;
     int firmware_date;
     int firmware_options;
@@ -137,6 +158,7 @@ public:
     int max_pwm;
     int deadman_enable;
     int system_events;
+    int wheel_type;
 
 
     diagnostic_updater::Updater diag_updater;
@@ -170,8 +192,16 @@ private:
         Joint() : position(0), velocity(0), effort(0), velocity_command(0) {}
     } joints_[2];
 
+    // MessageTypes enum in class to avoid global namespace pollution
+    enum WheelJointLocation {
+        Left  = 0,
+        Right = 1
+    };
+
     ros::Publisher leftError;
     ros::Publisher rightError;
+    ros::Publisher leftTickInterval;
+    ros::Publisher rightTickInterval;
 
     ros::Publisher battery_state;
     ros::Publisher motor_power_active;

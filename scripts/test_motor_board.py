@@ -1,4 +1,4 @@
-#!/usr/bin/pythmn -u
+#!/usr/bin/python -u
 
 #
 # Command control direct to Ubiquity Robotics Magni Controller Board
@@ -42,7 +42,7 @@ import thread
 import smbus
 
 # simple version string
-g_version = "20190703"
+g_version = "20210215"
 
 # default serial device.  An  adapter in USB is often  '/dev/ttyUSB0'
 g_serialDev = '/dev/ttyAMA0' 
@@ -300,9 +300,9 @@ def showHelp():
     logAlways("Commands: h or ? for help.  v for versions of firmware and hardware. Use Control-C to quit or E")
     logAlways("Speeds:   Enter 0 - 9 fwd speed. n,N slow/fast reverse. s for 'any speed' or c cycle last fwd/reverse")
     logAlways("  v  - Query firmware and hw version setting      o - Query 8-bit hardware option port with real board rev")
+    logAlways("  p  - Query PID control loop parameters          O - Query firmware hw options")
+    logAlways("  D  - Query range of registers for 32bit vals.   S - Set word value for any register. Reg in hex, value as decimal")
     logAlways("  q  - Query a 16 bit word value from register.   Q - Query 32 bit register value")
-    logAlways("  S  - Set a word value from for any register.   Enter reg as hex and value as decimal")
-    logAlways("  21 = Hardware Rev (50 = 5.0)                   22 = Firmware version")
     logAlways("  32 = Query if firmware thinks motors active    33 = Set to 1 to enable any exit of ESTOP feature")
     logAlways("  34 = Set to max PID threshold where pre rev 5.0 boards did a safer ESTOP release. 0 to disable")
     logAlways("  35 = Set to the max forward limit speed        36 - Set to a max negative reverse limit speed")
@@ -483,6 +483,29 @@ class serCommander():
                 logAlways("Forced Board Revision to rev 4.9")
                 time.sleep(0.02)
 
+            if input == 'D':          # Do register dump of a range of registers
+                logAlways("Query any control register to any value up to one long word size")
+                cmdFirstRegAsHex  = raw_input("Enter first control register number in hex: ")
+                cmdFirstRegNumber = int(cmdFirstRegAsHex,16)
+                cmdLastRegAsHex   = raw_input("Enter last control register number in hex: ")
+                cmdLastRegNumber  = int(cmdLastRegAsHex,16)
+                print("Dump MCB from hex Reg ", cmdFirstRegAsHex,"[",cmdFirstRegNumber,"] to hex Reg ", cmdLastRegAsHex,"[",cmdLastRegNumber,"]")
+                for reg in range(cmdFirstRegNumber, cmdLastRegNumber, 1):
+                    queryBytes = [ 0x7e, 0x3a, 0x34, 0, 0, 0, 0 ]
+                    queryBytes[2] = reg
+                    pktCksum = calcPacketCksum(queryBytes)
+                    queryBytes.append(pktCksum)
+                    ser.flushInput()
+                    ser.write(queryBytes)
+                    hexRegValue = '{:02x}'.format(reg)
+                    registerValue = fetchReplyLongWord(ser, '3c', hexRegValue)
+                    integerValue = int(registerValue,16)
+                    if integerValue > 2147483647:
+                        integerValue = (4294967296 - integerValue) * -1
+                    print("Reg ", hexRegValue, " value = ", registerValue, " hex : or dec ", integerValue)
+
+                time.sleep(0.02)
+
             if input == 'E':  # Enable ESET stop speed feature in firmware
                 logAlways("Enable firmware ESET stop safety feature")
                 queryBytes = [ 0x7e, 0x3a, 0x33, 0, 0, 0, 0 ]
@@ -545,6 +568,32 @@ class serCommander():
                 print("Register was set to  ", int(registerValue,16), " decimal", registerValue, " hex")
                 time.sleep(0.02)
 
+            if input == 'O':          # query the firmware options register set of bits
+                logAlways("Query the current hardware option bit settings")
+                cmdRegAsHex = '38'
+                cmdRegNumber = int(cmdRegAsHex,16)
+                queryBytes = [ 0x7e, 0x3a, 0x34, 0, 0, 0, 0 ]
+                queryBytes[2] = cmdRegNumber
+                pktCksum = calcPacketCksum(queryBytes)
+                queryBytes.append(pktCksum)
+                ser.flushInput()
+                ser.write(queryBytes)
+                logAlways("24")
+                registerValue = fetchReplyLongWord(ser, '3c', cmdRegAsHex)
+                logAlways("26")
+                print("Hardware option bits are set to  ", int(registerValue,16), " decimal", registerValue, " hex")
+                if ((int(registerValue,16) & 0x01) != 0):
+                    print ("  High resolution encoders")
+                else:
+                    print ("  Standard resolution encoders")
+                if ((int(registerValue,16) & 0x02) != 0):
+                    print ("  Thin gearless wheels")
+                else:
+                    print ("  Standard wheels")
+                if ((int(registerValue,16) & 0x04) != 0):
+                    print ("  Reverse the wheel direction")
+                time.sleep(0.02)
+
             if input == 'Q':          # query any register for a Long (32 bit value)
                 logAlways("Query any control register to any value up to one long word size")
                 cmdRegAsHex = raw_input("Enter control register number in hex: ")
@@ -556,7 +605,10 @@ class serCommander():
                 ser.flushInput()
                 ser.write(queryBytes)
                 registerValue = fetchReplyLongWord(ser, '3c', cmdRegAsHex)
-                print("Register was set to  ", int(registerValue,16), " decimal", registerValue, " hex")
+                integerValue = int(registerValue,16)
+                if integerValue > 2147483647:
+                    integerValue = (4294967296 - integerValue) * -1
+                print("Reg ", cmdRegAsHex, " value = ", registerValue, " hex : or dec ", integerValue)
                 time.sleep(0.02)
 
             if input == 'S':          # Set any register to any value
@@ -567,7 +619,7 @@ class serCommander():
                 cmdPacket = formMagniParamSetMessage(cmdRegNumber, cmdRegValue)
                 ser.write(cmdPacket)
                 time.sleep(0.02)
-                nextInput = setSpeedTillKeypress(ser, lastSpeed, lastSpeed)
+                # nextInput = setSpeedTillKeypress(ser, lastSpeed, lastSpeed)
 
             if input == 'x':
                 logAlways("Exit after sending stop command")
@@ -605,6 +657,38 @@ class serCommander():
                     optionBits = (inputPortBits & 0x70) >> 4
                     print ("Option jumper block is set to: (install a jumper sets a bit to 0)", optionBits)
 
+            if input == 'p':
+                logAlways("Fetch PID Factors")
+                # send queries to fetch PID cooeficients
+                queryPid = [ 0x7e, 0x3a, 0x1b, 0, 0, 0, 0 ]
+                pktCksum = calcPacketCksum(queryPid)
+                queryPid.append(pktCksum)
+                ser.flushInput()
+                ser.write(queryPid)
+                pidReg = fetchReplyWord(ser, '3c', '1b')
+                print("  P (1b)     = ", int(pidReg,16), " [", pidReg, " hex]")
+                queryPid = [ 0x7e, 0x3a, 0x1c, 0, 0, 0, 0 ]
+                pktCksum = calcPacketCksum(queryPid)
+                queryPid.append(pktCksum)
+                ser.flushInput()
+                ser.write(queryPid)
+                pidReg = fetchReplyWord(ser, '3c', '1c')
+                print("  I (1c)     = ", int(pidReg,16), " [", pidReg, " hex]")
+                queryPid = [ 0x7e, 0x3a, 0x1d, 0, 0, 0, 0 ]
+                pktCksum = calcPacketCksum(queryPid)
+                queryPid.append(pktCksum)
+                ser.flushInput()
+                ser.write(queryPid)
+                pidReg = fetchReplyWord(ser, '3c', '1d')
+                print("  D (1d)     = ", int(pidReg,16), " [", pidReg, " hex]")
+                queryPid = [ 0x7e, 0x3a, 0x37, 0, 0, 0, 0 ]
+                pktCksum = calcPacketCksum(queryPid)
+                queryPid.append(pktCksum)
+                ser.flushInput()
+                ser.write(queryPid)
+                pidReg = fetchReplyWord(ser, '3c', '37')
+                print("  MaxPWM (37)= ", int(pidReg,16), " [", pidReg, " hex]")
+                time.sleep(0.02)
 
             if input == 'v':
                 logAlways("Fetch software and hardware version information")
@@ -655,7 +739,7 @@ if __name__ == '__main__':
     print("Running with script version: " + g_version)
    
     if str(len(sys.argv)) == "3":
-        if str(sys.argv[1]) == "--dev":
+        if str(sys.argv[1]) == "--dev" or str(sys.argv[1]) == "--device":
             g_serialDev = str(sys.argv[2])
     print("Using serial device file: " + g_serialDev)
 

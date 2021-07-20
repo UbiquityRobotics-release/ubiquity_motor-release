@@ -35,6 +35,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // To access I2C we need some system includes
 #include <linux/i2c-dev.h>
+#include <linux/i2c.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #define  I2C_DEVICE  "/dev/i2c-1"     // This is specific to default Magni I2C port on host
@@ -42,10 +43,10 @@ const static uint8_t  I2C_PCF8574_8BIT_ADDR = 0x40; // I2C addresses are 7 bits 
 
 //#define SENSOR_DISTANCE 0.002478
 
-// For experimental purposes users will see that the wheel encoders are three phases 
+// For experimental purposes users will see that the wheel encoders are three phases
 // of very neaar 43 pulses per revolution or about 43*3 edges so we see very about 129 ticks per rev
-// This leads to 129/(2*Pi)  or about 20.53 ticks per radian experimentally. 
-// Below we will go with the exact ratio from gearbox specs 
+// This leads to 129/(2*Pi)  or about 20.53 ticks per radian experimentally.
+// Below we will go with the exact ratio from gearbox specs
 // 60 ticks per revolution of the motor (pre gearbox)
 // 17.2328767123 and  gear ratio of 4.29411764706:1
 #define TICKS_PER_RADIAN_ENC_3_STATE (20.50251516)   // used to read more misleading value of (41.0058030317/2)
@@ -62,8 +63,8 @@ int32_t  g_odomEvent = 0;
 
 // This utility opens and reads 1 or more bytes from a device on an I2C bus
 // This method was taken on it's own from a big I2C class we may choose to use later
-static int i2c_BufferRead(const char *i2cDevFile, uint8_t i2cAddr, 
-                          uint8_t* pBuffer, int16_t chipRegAddr, uint16_t NumByteToRead);
+static int i2c_BufferRead(const char *i2cDevFile, uint8_t i2cAddr,
+                          uint8_t* pBuffer, uint16_t NumBytesToRead);
 
 
 MotorHardware::MotorHardware(ros::NodeHandle nh, CommsParams serial_params,
@@ -87,7 +88,7 @@ MotorHardware::MotorHardware(ros::NodeHandle nh, CommsParams serial_params,
     // Insert a delay prior to serial port setup to avoid a race defect.
     // We see soemtimes the OS sets the port to 115200 baud just after we set it
     ROS_INFO("Delay before MCB serial port initialization");
-    ros::Duration(2.0).sleep();
+    ros::Duration(3.0).sleep();
     ROS_INFO("Initialize MCB serial port '%s' for %d baud",
         serial_params.serial_port.c_str(), serial_params.baud_rate);
 
@@ -96,8 +97,11 @@ MotorHardware::MotorHardware(ros::NodeHandle nh, CommsParams serial_params,
 
      ROS_INFO("MCB serial port initialized");
 
+    // For motor tunning and other uses we publish details for each wheel
     leftError = nh.advertise<std_msgs::Int32>("left_error", 1);
     rightError = nh.advertise<std_msgs::Int32>("right_error", 1);
+    leftTickInterval  = nh.advertise<std_msgs::Int32>("left_tick_interval", 1);
+    rightTickInterval = nh.advertise<std_msgs::Int32>("right_tick_interval", 1);
 
     battery_state = nh.advertise<sensor_msgs::BatteryState>("battery_state", 1);
     motor_power_active = nh.advertise<std_msgs::Bool>("motor_power_active", 1);
@@ -141,16 +145,47 @@ MotorHardware::MotorHardware(ros::NodeHandle nh, CommsParams serial_params,
     diag_updater.add("Limits", &motor_diag_, &MotorDiagnostics::limit_status);
     diag_updater.add("Battery", &motor_diag_, &MotorDiagnostics::battery_status);
     diag_updater.add("MotorPower", &motor_diag_, &MotorDiagnostics::motor_power_status);
+    diag_updater.add("PidParamP", &motor_diag_, &MotorDiagnostics::motor_pid_p_status);
+    diag_updater.add("PidParamI", &motor_diag_, &MotorDiagnostics::motor_pid_i_status);
+    diag_updater.add("PidParamD", &motor_diag_, &MotorDiagnostics::motor_pid_d_status);
+    diag_updater.add("PidParamV", &motor_diag_, &MotorDiagnostics::motor_pid_v_status);
+    diag_updater.add("PidMaxPWM", &motor_diag_, &MotorDiagnostics::motor_max_pwm_status);
     diag_updater.add("FirmwareOptions", &motor_diag_, &MotorDiagnostics::firmware_options_status);
     diag_updater.add("FirmwareDate", &motor_diag_, &MotorDiagnostics::firmware_date_status);
 }
 
 MotorHardware::~MotorHardware() { delete motor_serial_; }
 
+// Close of the serial port is used in a special case of suspending the motor controller
+// so that another service can load firmware or do direct MCB diagnostics
+void MotorHardware::closePort() {
+    motor_serial_->closePort();
+}
+
+// After we have given up the MCB we open serial port again using current instance of Serial
+bool MotorHardware::openPort() {
+    return motor_serial_->openPort();
+}
+
 void MotorHardware::clearCommands() {
     for (size_t i = 0; i < sizeof(joints_) / sizeof(joints_[0]); i++) {
         joints_[i].velocity_command = 0;
     }
+}
+
+// Read the current wheel positions in radians both at once for a snapshot of position
+void MotorHardware::getWheelJointPositions(double &leftWheelPosition, double &rightWheelPosition) {
+    leftWheelPosition  = joints_[WheelJointLocation::Left].position;
+    rightWheelPosition = joints_[WheelJointLocation::Right].position;
+    return;
+}
+
+// Set the current wheel joing velocities in radians/sec both at once for a snapshot of velocity
+// This interface is supplied because MotorHardware does not do a loop on it's own
+void MotorHardware::setWheelJointVelocities(double leftWheelVelocity, double rightWheelVelocity) {
+    joints_[WheelJointLocation::Left].velocity  = leftWheelVelocity;
+    joints_[WheelJointLocation::Right].velocity = rightWheelVelocity;
+    return;
 }
 
 // readInputs() will receive serial and act on the response from motor controller
@@ -191,8 +226,13 @@ void MotorHardware::readInputs() {
                     break;
 
                 case MotorMessage::REG_BOTH_ODOM: {
-                    // These counts are the incremental number of ticks since last report
-                    // WARNING: IF WE LOOSE A MESSAGE WE DRIFT FROM REAL POSITION
+                    /* 
+                     * ODOM messages from the MCB tell us how far wheels have rotated
+                     *
+                     * It is here we keep track of wheel joint position 
+                     * The odom counts from the MCB are the incremental number of ticks since last report
+                     *  WARNING: IF WE LOOSE A MESSAGE WE DRIFT FROM REAL POSITION
+                     */
                     int32_t odom = mm.getData();
                     // ROS_ERROR("odom signed %d", odom);
                     int16_t odomLeft = (odom >> 16) & 0xffff;
@@ -204,9 +244,9 @@ void MotorHardware::readInputs() {
                     g_odomEvent += 1;
                     //if ((g_odomEvent % 50) == 1) { ROS_ERROR("leftOdom %d rightOdom %d", g_odomLeft, g_odomRight); }
 
-                    // Add or subtract from position using the incremental odom value
-                    joints_[0].position += (odomLeft / ticks_per_radian);
-                    joints_[1].position += (odomRight / ticks_per_radian);
+                    // Add or subtract from position in radians using the incremental odom value
+                    joints_[WheelJointLocation::Left].position  += (odomLeft / ticks_per_radian);
+                    joints_[WheelJointLocation::Right].position += (odomRight / ticks_per_radian);
 
 		    motor_diag_.odom_update_status.tick(); // Let diag know we got odom
                     break;
@@ -234,20 +274,28 @@ void MotorHardware::readInputs() {
                     // Set radians per encoder tic based on encoder specifics
                     if (data & MotorMessage::OPT_ENC_6_STATE) {
                         ROS_WARN_ONCE("Encoder Resolution: 'Enhanced'");
-		     	fw_params.hw_options |= MotorMessage::OPT_ENC_6_STATE; 
+		     	fw_params.hw_options |= MotorMessage::OPT_ENC_6_STATE;
                         ticks_per_radian  = TICKS_PER_RADIAN_ENC_3_STATE * 2;
                     } else {
                         ROS_WARN_ONCE("Encoder Resolution: 'Standard'");
-		    	fw_params.hw_options &= ~MotorMessage::OPT_ENC_6_STATE; 
+		    	fw_params.hw_options &= ~MotorMessage::OPT_ENC_6_STATE;
                         ticks_per_radian  = TICKS_PER_RADIAN_ENC_3_STATE;
                     }
 
                     if (data & MotorMessage::OPT_WHEEL_TYPE_THIN) {
                         ROS_WARN_ONCE("Wheel type is: 'thin'");
-		    	fw_params.hw_options |= MotorMessage::OPT_WHEEL_TYPE_THIN; 
+		    	fw_params.hw_options |= MotorMessage::OPT_WHEEL_TYPE_THIN;
                     } else {
                         ROS_WARN_ONCE("Wheel type is: 'standard'");
-		    	fw_params.hw_options &= ~MotorMessage::OPT_WHEEL_TYPE_THIN; 
+		    	fw_params.hw_options &= ~MotorMessage::OPT_WHEEL_TYPE_THIN;
+                    }
+
+                    if (data & MotorMessage::OPT_WHEEL_DIR_REVERSE) {
+                        ROS_WARN_ONCE("Wheel direction is: 'reverse'");
+		    	fw_params.hw_options |= MotorMessage::OPT_WHEEL_DIR_REVERSE;
+                    } else {
+                        ROS_WARN_ONCE("Wheel direction is: 'standard'");
+		    	fw_params.hw_options &= ~MotorMessage::OPT_WHEEL_DIR_REVERSE;
                     }
                     break;
                 }
@@ -257,31 +305,31 @@ void MotorHardware::readInputs() {
 
                     if (data & MotorMessage::LIM_M1_PWM) {
                         ROS_WARN("left PWM limit reached");
-		    	motor_diag_.left_pwm_limit = true; 
+		    	motor_diag_.left_pwm_limit = true;
                     }
                     if (data & MotorMessage::LIM_M2_PWM) {
                         ROS_WARN("right PWM limit reached");
-		    	motor_diag_.right_pwm_limit = true; 
+		    	motor_diag_.right_pwm_limit = true;
                     }
                     if (data & MotorMessage::LIM_M1_INTEGRAL) {
                         ROS_DEBUG("left Integral limit reached");
-		    	motor_diag_.left_integral_limit = true; 
+		    	motor_diag_.left_integral_limit = true;
                     }
                     if (data & MotorMessage::LIM_M2_INTEGRAL) {
                         ROS_DEBUG("right Integral limit reached");
-		    	motor_diag_.right_integral_limit = true; 
+		    	motor_diag_.right_integral_limit = true;
                     }
                     if (data & MotorMessage::LIM_M1_MAX_SPD) {
                         ROS_WARN("left Maximum speed reached");
-		    	motor_diag_.left_max_speed_limit = true; 
+		    	motor_diag_.left_max_speed_limit = true;
                     }
                     if (data & MotorMessage::LIM_M2_MAX_SPD) {
                         ROS_WARN("right Maximum speed reached");
-		    	motor_diag_.right_max_speed_limit = true; 
+		    	motor_diag_.right_max_speed_limit = true;
                     }
                     if (data & MotorMessage::LIM_PARAM_LIMIT) {
                         ROS_WARN_ONCE("parameter limit in firmware");
-		    	motor_diag_.param_limit_in_firmware = true; 
+		    	motor_diag_.param_limit_in_firmware = true;
                     }
                     break;
                 }
@@ -300,30 +348,56 @@ void MotorHardware::readInputs() {
                     bstate.power_supply_technology = sensor_msgs::BatteryState::POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
                     battery_state.publish(bstate);
 
-		    motor_diag_.battery_voltage = bstate.voltage; 
-		    motor_diag_.battery_voltage_low_level = MotorHardware::fw_params.battery_voltage_low_level; 
-		    motor_diag_.battery_voltage_critical = MotorHardware::fw_params.battery_voltage_critical; 
+		    motor_diag_.battery_voltage = bstate.voltage;
+		    motor_diag_.battery_voltage_low_level = MotorHardware::fw_params.battery_voltage_low_level;
+		    motor_diag_.battery_voltage_critical = MotorHardware::fw_params.battery_voltage_critical;
                     break;
                 }
                 case MotorMessage::REG_MOT_PWR_ACTIVE: {   // Starting with rev 5.0 board we can see power state
                     int32_t data = mm.getData();
 
                     if (data & MotorMessage::MOT_POW_ACTIVE) {
-		    	if (estop_motor_power_off == true) { 
+		    	if (estop_motor_power_off == true) {
                             ROS_WARN("Motor power has gone from inactive to active. Most likely from ESTOP switch");
                         }
-		    	estop_motor_power_off = false; 
+		    	estop_motor_power_off = false;
                     } else {
-		    	if (estop_motor_power_off == false) { 
+		    	if (estop_motor_power_off == false) {
                             ROS_WARN("Motor power has gone inactive. Most likely from ESTOP switch active");
                         }
-		    	estop_motor_power_off = true; 
+		    	estop_motor_power_off = true;
                     }
                     motor_diag_.estop_motor_power_off = estop_motor_power_off;  // A copy for diagnostics topic
 
 		    std_msgs::Bool estop_message;
 		    estop_message.data = !estop_motor_power_off;
 		    motor_power_active.publish(estop_message);
+                }
+
+                case MotorMessage::REG_TINT_BOTH_WHLS: {   // As of v41 show time between wheel enc edges
+                    int32_t data = mm.getData();
+                    uint16_t leftTickSpacing = (data >> 16) & 0xffff;
+                    uint16_t rightTickSpacing = data & 0xffff;
+                    uint16_t tickCap = 0;    // We can cap the max value if desired
+
+                    if ((tickCap > 0) && (leftTickSpacing  > tickCap)) { leftTickSpacing  = tickCap; }
+                    if ((tickCap > 0) && (rightTickSpacing > tickCap)) { rightTickSpacing = tickCap; }
+
+                    // Publish the two wheel tic intervals
+                    std_msgs::Int32 leftInterval;
+                    std_msgs::Int32 rightInterval;
+
+                    leftInterval.data  = leftTickSpacing;
+                    rightInterval.data = rightTickSpacing;
+
+                    // Only publish the tic intervals when wheels are moving
+                    if (data > 1) {     // Optionally show the intervals for debug
+                        leftTickInterval.publish(leftInterval);
+                        rightTickInterval.publish(rightInterval);
+
+                        ROS_DEBUG("Tic Ints M1 %d [0x%x]  M2 %d [0x%x]",  
+                            leftTickSpacing, leftTickSpacing, rightTickSpacing, rightTickSpacing);
+                    }
                 }
                 default:
                     break;
@@ -356,7 +430,8 @@ void MotorHardware::writeSpeedsInRadians(double  left_radians, double  right_rad
     motor_serial_->transmitCommand(both);
 
     // ROS_ERROR("velocity_command %f rad/s %f rad/s",
-    // joints_[0].velocity_command, joints_[1].velocity_command);
+    // joints_[WheelJointLocation::Left].velocity_command, joints_[WheelJointLocation::Right].velocity_command);
+    // joints_[LEFT_WHEEL_JOINT].velocity_command, joints_[RIGHT_WHEEL_JOINT].velocity_command);
     // ROS_ERROR("SPEEDS %d %d", left.getData(), right.getData());
 }
 
@@ -367,8 +442,8 @@ void MotorHardware::writeSpeedsInRadians(double  left_radians, double  right_rad
 void MotorHardware::writeSpeeds() {
     // This call pulls in speeds from the joints array maintained by other layers
 
-    double  left_radians = joints_[0].velocity_command;
-    double  right_radians = joints_[1].velocity_command;
+    double  left_radians  = joints_[WheelJointLocation::Left].velocity_command;
+    double  right_radians = joints_[WheelJointLocation::Right].velocity_command;
 
     writeSpeedsInRadians(left_radians, right_radians);
 }
@@ -437,7 +512,7 @@ bool MotorHardware::getEstopState(void) {
     return estop_motor_power_off;
 }
 
-// Setup the controller board maximum settable motor forward speed 
+// Setup the controller board maximum settable motor forward speed
 void MotorHardware::setMaxFwdSpeed(int32_t max_speed_fwd) {
     ROS_INFO("setting max motor forward speed to %d", (int)max_speed_fwd);
     MotorMessage mm;
@@ -447,14 +522,34 @@ void MotorHardware::setMaxFwdSpeed(int32_t max_speed_fwd) {
     motor_serial_->transmitCommand(mm);
 }
 
-// Setup the Wheel Type. Overrides mode in use on hardware  
+// Setup the Wheel Type. Overrides mode in use on hardware
 // This used to only be standard but THIN_WHEELS were added in Jun 2020
-void MotorHardware::setWheelType(int32_t wheel_type) {
-    ROS_INFO("setting MCB wheel type %d", (int)wheel_type);
+void MotorHardware::setWheelType(int32_t new_wheel_type) {
+
     MotorMessage ho;
-    ho.setRegister(MotorMessage::REG_WHEEL_TYPE);
+    switch(new_wheel_type) {
+        case MotorMessage::OPT_WHEEL_TYPE_STANDARD:
+        case MotorMessage::OPT_WHEEL_TYPE_THIN:
+            ROS_INFO_ONCE("setting MCB wheel type %d", (int)new_wheel_type);
+            wheel_type = new_wheel_type;
+            ho.setRegister(MotorMessage::REG_WHEEL_TYPE);
+            ho.setType(MotorMessage::TYPE_WRITE);
+            ho.setData(wheel_type);
+            motor_serial_->transmitCommand(ho);
+            break;
+        default:
+            ROS_ERROR("Illegal MCB wheel type 0x%x will not be set!", (int)new_wheel_type);
+    }
+}
+
+// Setup the Wheel direction. Overrides mode in use on hardware
+// This allows for customer to install wheels on cutom robots as they like
+void MotorHardware::setWheelDirection(int32_t wheel_direction) {
+    ROS_INFO("setting MCB wheel direction to %d", (int)wheel_direction);
+    MotorMessage ho;
+    ho.setRegister(MotorMessage::REG_WHEEL_DIR);
     ho.setType(MotorMessage::TYPE_WRITE);
-    ho.setData(wheel_type);
+    ho.setData(wheel_direction);
     motor_serial_->transmitCommand(ho);
 }
 
@@ -465,9 +560,9 @@ int MotorHardware::getOptionSwitch(void) {
     uint8_t buf[16];
     int retBits = 0;
     ROS_INFO("reading MCB option switch on the I2C bus");
-    int retCount = i2c_BufferRead(I2C_DEVICE, I2C_PCF8574_8BIT_ADDR, &buf[0], -1, 1);
+    int retCount = i2c_BufferRead(I2C_DEVICE, I2C_PCF8574_8BIT_ADDR, &buf[0], 1);
     if (retCount < 0) {
-        ROS_ERROR("Error %d in reading MCB option switch at 8bit Addr 0x%x", 
+        ROS_ERROR("Error %d in reading MCB option switch at 8bit Addr 0x%x",
             retCount, I2C_PCF8574_8BIT_ADDR);
         retBits = retCount;
     } else if (retCount != 1) {
@@ -550,6 +645,21 @@ void MotorHardware::setParams(FirmwareParams fp) {
     fw_params.estop_pid_threshold = fp.estop_pid_threshold;
 }
 
+// Forces next calls to sendParams() to always update each parameter.
+// KEEP THIS IN SYNC WITH CHANGES TO sendParams()
+void MotorHardware::forcePidParamUpdates() {
+
+    // Reset each of the flags that causes parameters to be  sent to MCB by sendParams()
+    prev_fw_params.pid_proportional = -1;
+    prev_fw_params.pid_integral = -1;
+    prev_fw_params.pid_derivative = -1;
+    prev_fw_params.pid_velocity = -1;
+    prev_fw_params.pid_denominator = -1;
+    prev_fw_params.pid_moving_buffer_size = -1;
+    prev_fw_params.max_pwm = -1;
+
+}
+
 void MotorHardware::sendParams() {
     std::vector<MotorMessage> commands;
 
@@ -563,8 +673,9 @@ void MotorHardware::sendParams() {
 
     if (cycle == 0 &&
         fw_params.pid_proportional != prev_fw_params.pid_proportional) {
-        ROS_WARN("Setting P to %d", fw_params.pid_proportional);
+        ROS_WARN("Setting PidParam P to %d", fw_params.pid_proportional);
         prev_fw_params.pid_proportional = fw_params.pid_proportional;
+        motor_diag_.fw_pid_proportional = fw_params.pid_proportional;
         MotorMessage p;
         p.setRegister(MotorMessage::REG_PARAM_P);
         p.setType(MotorMessage::TYPE_WRITE);
@@ -573,8 +684,9 @@ void MotorHardware::sendParams() {
     }
 
     if (cycle == 1 && fw_params.pid_integral != prev_fw_params.pid_integral) {
-        ROS_WARN("Setting I to %d", fw_params.pid_integral);
+        ROS_WARN("Setting PidParam I to %d", fw_params.pid_integral);
         prev_fw_params.pid_integral = fw_params.pid_integral;
+        motor_diag_.fw_pid_integral = fw_params.pid_integral;
         MotorMessage i;
         i.setRegister(MotorMessage::REG_PARAM_I);
         i.setType(MotorMessage::TYPE_WRITE);
@@ -584,8 +696,9 @@ void MotorHardware::sendParams() {
 
     if (cycle == 2 &&
         fw_params.pid_derivative != prev_fw_params.pid_derivative) {
-        ROS_WARN("Setting D to %d", fw_params.pid_derivative);
+        ROS_WARN("Setting PidParam D to %d", fw_params.pid_derivative);
         prev_fw_params.pid_derivative = fw_params.pid_derivative;
+        motor_diag_.fw_pid_derivative = fw_params.pid_derivative;
         MotorMessage d;
         d.setRegister(MotorMessage::REG_PARAM_D);
         d.setType(MotorMessage::TYPE_WRITE);
@@ -595,8 +708,9 @@ void MotorHardware::sendParams() {
 
     if (cycle == 3 && (motor_diag_.firmware_version >= MIN_FW_PID_V_TERM) &&
         fw_params.pid_velocity != prev_fw_params.pid_velocity) {
-        ROS_WARN("Setting V to %d", fw_params.pid_velocity);
+        ROS_WARN("Setting PidParam V to %d", fw_params.pid_velocity);
         prev_fw_params.pid_velocity = fw_params.pid_velocity;
+        motor_diag_.fw_pid_velocity = fw_params.pid_velocity;
         MotorMessage v;
         v.setRegister(MotorMessage::REG_PARAM_V);
         v.setType(MotorMessage::TYPE_WRITE);
@@ -606,8 +720,9 @@ void MotorHardware::sendParams() {
 
     if (cycle == 4 &&
         fw_params.pid_denominator != prev_fw_params.pid_denominator) {
-        ROS_WARN("Setting Denominator to %d", fw_params.pid_denominator);
+        ROS_WARN("Setting PidParam Denominator to %d", fw_params.pid_denominator);
         prev_fw_params.pid_denominator = fw_params.pid_denominator;
+        motor_diag_.fw_pid_denominator = fw_params.pid_denominator;
         MotorMessage denominator;
         denominator.setRegister(MotorMessage::REG_PARAM_C);
         denominator.setType(MotorMessage::TYPE_WRITE);
@@ -618,9 +733,10 @@ void MotorHardware::sendParams() {
     if (cycle == 5 &&
         fw_params.pid_moving_buffer_size !=
             prev_fw_params.pid_moving_buffer_size) {
-        ROS_WARN("Setting D window to %d", fw_params.pid_moving_buffer_size);
+        ROS_WARN("Setting PidParam D window to %d", fw_params.pid_moving_buffer_size);
         prev_fw_params.pid_moving_buffer_size =
             fw_params.pid_moving_buffer_size;
+        motor_diag_.fw_pid_moving_buffer_size = fw_params.pid_moving_buffer_size;
         MotorMessage winsize;
         winsize.setRegister(MotorMessage::REG_MOVING_BUF_SIZE);
         winsize.setType(MotorMessage::TYPE_WRITE);
@@ -630,8 +746,9 @@ void MotorHardware::sendParams() {
 
     if (cycle == 6 &&
         fw_params.max_pwm != prev_fw_params.max_pwm) {
-        ROS_WARN("Setting max_pwm to %d", fw_params.max_pwm);
+        ROS_WARN("Setting PidParam max_pwm to %d", fw_params.max_pwm);
         prev_fw_params.max_pwm = fw_params.max_pwm;
+        motor_diag_.fw_max_pwm = fw_params.max_pwm;
         MotorMessage maxpwm;
         maxpwm.setRegister(MotorMessage::REG_MAX_PWM);
         maxpwm.setType(MotorMessage::TYPE_WRITE);
@@ -644,6 +761,11 @@ void MotorHardware::sendParams() {
     if (commands.size() != 0) {
         motor_serial_->transmitCommands(commands);
     }
+}
+
+// Get current battery voltage
+float MotorHardware::getBatteryVoltage(void) {
+    return motor_diag_.battery_voltage;   // We keep battery_voltage in diagnostic context
 }
 
 void MotorHardware::setDebugLeds(bool led_1, bool led_2) {
@@ -763,7 +885,7 @@ void MotorDiagnostics::battery_status(DiagnosticStatusWrapper &stat) {
     stat.add("Battery Voltage", battery_voltage);
     if (battery_voltage < battery_voltage_low_level) {
         stat.summary(DiagnosticStatusWrapper::WARN, "Battery low");
-    } 
+    }
     else if (battery_voltage < battery_voltage_critical) {
         stat.summary(DiagnosticStatusWrapper::ERROR, "Battery critical");
     }
@@ -771,16 +893,42 @@ void MotorDiagnostics::battery_status(DiagnosticStatusWrapper &stat) {
         stat.summary(DiagnosticStatusWrapper::OK, "Battery OK");
     }
 }
+
+// PID parameters for motor control
+void MotorDiagnostics::motor_pid_p_status(DiagnosticStatusWrapper &stat) {
+    stat.add("PidParam P", fw_pid_proportional);
+    stat.summary(DiagnosticStatus::OK, "PID Parameter P");
+}
+void MotorDiagnostics::motor_pid_i_status(DiagnosticStatusWrapper &stat) {
+    stat.add("PidParam I", fw_pid_integral);
+    stat.summary(DiagnosticStatus::OK, "PID Parameter I");
+}
+void MotorDiagnostics::motor_pid_d_status(DiagnosticStatusWrapper &stat) {
+    stat.add("PidParam D", fw_pid_derivative);
+    stat.summary(DiagnosticStatus::OK, "PID Parameter D");
+}
+void MotorDiagnostics::motor_pid_v_status(DiagnosticStatusWrapper &stat) {
+    stat.add("PidParam V", fw_pid_velocity);
+    stat.summary(DiagnosticStatus::OK, "PID Parameter V");
+}
+void MotorDiagnostics::motor_max_pwm_status(DiagnosticStatusWrapper &stat) {
+    stat.add("PidParam MaxPWM", fw_max_pwm);
+    stat.summary(DiagnosticStatus::OK, "PID Max PWM");
+}
+
+
 void MotorDiagnostics::motor_power_status(DiagnosticStatusWrapper &stat) {
     stat.add("Motor Power", !estop_motor_power_off);
     if (estop_motor_power_off == false) {
         stat.summary(DiagnosticStatusWrapper::ERROR, "Motor power on");
-    } 
+    }
     else {
         stat.summary(DiagnosticStatusWrapper::WARN, "Motor power off");
     }
 }
-// motor_encoder_mode returns 0 for legacy encoders and 1 for 6-state firmware
+
+
+// Show firmware options and give readable decoding of the meaning of the bits
 void MotorDiagnostics::firmware_options_status(DiagnosticStatusWrapper &stat) {
     stat.add("Firmware Options", firmware_options);
     std::string option_descriptions("");
@@ -794,6 +942,10 @@ void MotorDiagnostics::firmware_options_status(DiagnosticStatusWrapper &stat) {
     } else {
         option_descriptions +=  ", Standard wheels";
     }
+    if (firmware_options & MotorMessage::OPT_WHEEL_DIR_REVERSE) {
+        // Only indicate wheel reversal if that has been set as it is non-standard
+        option_descriptions +=  ", Reverse polarity wheels";
+    }
     stat.summary(DiagnosticStatusWrapper::OK, option_descriptions);
 }
 
@@ -802,53 +954,42 @@ void MotorDiagnostics::firmware_options_status(DiagnosticStatusWrapper &stat) {
 // The I2C address is the 8-bit address which is the 7-bit addr shifted left in some code
 // If chipRegAddr is greater than 1 we write this out for the internal chip address for the following read(s)
 //
-// Returns number of bytes read where 0 or less implies some form of failure
-//
 // NOTE: The i2c8bitAddr will be shifted right one bit to use as 7-bit I2C addr
 //
-static int i2c_BufferRead(const char *i2cDevFile, uint8_t i2c8bitAddr, 
-                          uint8_t *pBuffer, int16_t chipRegAddr, uint16_t NumByteToRead)
+static int i2c_BufferRead(const char *i2cDevFile, uint8_t i2c8bitAddr,
+                          uint8_t *pBuffer, uint16_t NumBytesToRead)
 {
-   int bytesRead = 0;
-   int retCode   = 0;
+    int fd;                                         // File descriptor
+    int retCode = 0;
+    int byteRead = 0;
+    int slaveAddress = i2c8bitAddr >> 1;            // Address of the I2C device
 
-    int fd;                                         // File descrition
-    int  address   = i2c8bitAddr >> 1;              // Address of the I2C device
-    uint8_t buf[8];                                 // Buffer for data being written to the i2c device
-
-    if ((fd = open(i2cDevFile, O_RDWR)) < 0) {      // Open port for reading and writing
-      retCode = -2;
+    if ((fd = open(i2cDevFile, O_RDONLY)) < 0) {      // Open port for reading and writing
       ROS_ERROR("Cannot open I2C def of %s with error %s", i2cDevFile, strerror(errno));
+      retCode = -1;
       goto exitWithNoClose;
     }
 
-    // The ioctl here will address the I2C slave device making it ready for 1 or more other bytes
-    if (ioctl(fd, I2C_SLAVE, address) != 0) {        // Set the port options and addr of the dev
-      retCode = -3;
-      ROS_ERROR("Failed to get bus access to I2C device %s!  ERROR: %s", i2cDevFile, strerror(errno));
-      goto exitWithFileClose;
-    }
-
-    if (chipRegAddr < 0) {     // Suppress reg address if negative value was used
-      buf[0] = (uint8_t)(chipRegAddr);          // Internal chip register address
-      if ((write(fd, buf, 1)) != 1) {           // Write both bytes to the i2c port
-        retCode = -4;
+    // The ioctl here will address the I2C slave device making it ready to exchange data with the master device
+    if (ioctl(fd, I2C_SLAVE, slaveAddress) != 0) {        // Set the port options and addr of the dev
+        retCode = -3;
+        ROS_ERROR("Failed to get bus access to I2C device %s!  ERROR: %s", i2cDevFile, strerror(errno));
         goto exitWithFileClose;
-      }
     }
 
-    bytesRead = read(fd, pBuffer, NumByteToRead);
-    if (bytesRead != NumByteToRead) {      // verify the number of bytes we requested were read
-      retCode = -9;
+    // Reading  without the initial write call, due to the slave device not having any internal configuration or status registers
+    byteRead = read(fd, pBuffer, NumBytesToRead);
+    if (byteRead != NumBytesToRead) {
+      retCode = -2;
+      ROS_ERROR("Failed to read from I2C device %s!  ERROR: %s", i2cDevFile, strerror(errno));
       goto exitWithFileClose;
     }
-    retCode = bytesRead;
+    retCode = byteRead;
 
-  exitWithFileClose:
-    close(fd);
+    exitWithFileClose:
+        close(fd);
 
-  exitWithNoClose:
+    exitWithNoClose:
 
   return retCode;
 }
-
