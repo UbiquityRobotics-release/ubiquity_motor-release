@@ -1,3 +1,26 @@
+## ubiquity_motor (noetic) - 0.13.2-1
+
+The packages in the `ubiquity_motor` repository were released into the `noetic` distro by running `/usr/bin/bloom-release ubiquity_motor --track noetic -r noetic --no-pull-request` on `Tue, 27 Jul 2021 22:47:32 -0000`
+
+The `ubiquity_motor` package was released.
+
+Version of package(s) in repository `ubiquity_motor`:
+
+- upstream repository: https://github.com/UbiquityRobotics/ubiquity_motor.git
+- release repository: unknown
+- rosdistro version: `null`
+- old version: `0.13.1-1`
+- new version: `0.13.2-1`
+
+Versions of tools used:
+
+- bloom version: `0.10.7`
+- catkin_pkg version: `0.4.23`
+- rosdep version: `0.21.0`
+- rosdistro version: `0.8.3`
+- vcstools version: `0.1.42`
+
+
 ## ubiquity_motor (noetic) - 0.13.1-1
 
 The packages in the `ubiquity_motor` repository were released into the `noetic` distro by running `/usr/bin/bloom-release ubiquity_motor -r noetic` on `Thu, 22 Jul 2021 22:36:00 -0000`
